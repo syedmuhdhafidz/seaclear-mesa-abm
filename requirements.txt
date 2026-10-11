@@ -1,0 +1,7 @@
+mesa[rec]==3.5.1
+solara==1.64.0
+ipyvue==1.13.0
+ipyvuetify==1.12.0
+numpy
+matplotlib
+pandas
