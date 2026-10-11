@@ -1,20 +1,22 @@
 """
-SeaClear Mesa Agents
---------------------
-
-This file defines the agents used in the simplified
-SeaClear Observation ROV simulation.
+SeaClear Mesa Continuous-Space Agents
+-------------------------------------
 
 Agents:
     - LitterAgent
     - ObservationROVAgent
+
+Both agents use Mesa's ContinuousSpaceAgent so that their
+positions are managed natively by Mesa ContinuousSpace.
 """
 
 import math
 
 import numpy as np
 
-from mesa import Agent
+from mesa.experimental.continuous_space import (
+    ContinuousSpaceAgent,
+)
 
 
 # ============================================================
@@ -22,22 +24,21 @@ from mesa import Agent
 # ============================================================
 
 
-class LitterAgent(Agent):
+class LitterAgent(ContinuousSpaceAgent):
     """
-    Represents one individual litter object on the seabed.
+    Represents one litter object on the seabed.
 
-    The litter is a passive agent:
-    - It does not move.
-    - It stores its own position.
-    - It stores whether it has been detected.
-    - It records when it was detected.
+    The litter agent is passive:
+        - It remains stationary.
+        - It stores its detection state.
+        - It records detection time.
     """
 
     def __init__(
         self,
         model,
-        x,
-        y,
+        space,
+        position,
     ):
         """
         Create one litter agent.
@@ -45,19 +46,22 @@ class LitterAgent(Agent):
         Parameters
         ----------
         model:
-            The Mesa model that owns this agent.
+            Parent Mesa model.
 
-        x : float
-            X-coordinate of the litter.
+        space:
+            Mesa ContinuousSpace.
 
-        y : float
-            Y-coordinate of the litter.
+        position:
+            Initial [x, y] position.
         """
 
-        super().__init__(model)
+        super().__init__(
+            space,
+            model,
+        )
 
         self.position = np.array(
-            [x, y],
+            position,
             dtype=float,
         )
 
@@ -74,23 +78,25 @@ class LitterAgent(Agent):
         rov_id,
     ):
         """
-        Change the litter state from undetected to detected.
+        Change litter state from undetected to detected.
         """
 
         if not self.detected:
 
             self.detected = True
 
-            self.detection_time = detection_time
+            self.detection_time = (
+                detection_time
+            )
 
-            self.detected_by = rov_id
+            self.detected_by = (
+                rov_id
+            )
 
 
     def step(self):
         """
-        Litter is passive in this simplified model.
-
-        Therefore, no action is performed during its step.
+        Litter is stationary in this simplified model.
         """
 
         pass
@@ -101,53 +107,33 @@ class LitterAgent(Agent):
 # ============================================================
 
 
-class ObservationROVAgent(Agent):
+class ObservationROVAgent(
+    ContinuousSpaceAgent
+):
     """
-    Represents the active Observation ROV agent.
+    Active Observation ROV agent.
 
     Behaviour:
-        1. Follow the lawnmower search trajectory.
-        2. Sense nearby litter agents.
-        3. Calculate detection probability.
-        4. Detect litter probabilistically.
+        1. Follow the lawnmower path.
+        2. Query nearby agents from ContinuousSpace.
+        3. Attempt probabilistic litter detection.
     """
 
     def __init__(
         self,
         model,
+        space,
         path,
         speed,
         detection_radius,
         max_detection_probability,
         detection_decay,
     ):
-        """
-        Create the Observation ROV agent.
 
-        Parameters
-        ----------
-        model:
-            Mesa model that owns this agent.
-
-        path:
-            Sequence of (x, y) coordinates defining
-            the lawnmower trajectory.
-
-        speed : float
-            ROV speed in metres per second.
-
-        detection_radius : float
-            Maximum sensor detection distance.
-
-        max_detection_probability : float
-            Maximum probability of detecting litter.
-
-        detection_decay : float
-            Controls how detection probability decreases
-            with distance.
-        """
-
-        super().__init__(model)
+        super().__init__(
+            space,
+            model,
+        )
 
         self.path = np.array(
             path,
@@ -156,17 +142,23 @@ class ObservationROVAgent(Agent):
 
         self.speed = speed
 
-        self.detection_radius = detection_radius
+        self.detection_radius = (
+            detection_radius
+        )
 
         self.max_detection_probability = (
             max_detection_probability
         )
 
-        self.detection_decay = detection_decay
+        self.detection_decay = (
+            detection_decay
+        )
 
         self.path_index = 0
 
-        self.position = self.path[0].copy()
+        self.position = (
+            self.path[0].copy()
+        )
 
         self.previous_position = (
             self.position.copy()
@@ -187,7 +179,7 @@ class ObservationROVAgent(Agent):
 
     def move(self):
         """
-        Move one step along the planned lawnmower trajectory.
+        Move one discrete path step along the lawnmower path.
         """
 
         if self.path_index >= len(self.path) - 1:
@@ -202,13 +194,22 @@ class ObservationROVAgent(Agent):
 
         self.path_index += 1
 
-        self.position = (
-            self.path[self.path_index].copy()
+        new_position = (
+            self.path[
+                self.path_index
+            ].copy()
         )
 
-        movement_distance = np.linalg.norm(
-            self.position
-            - self.previous_position
+        movement_distance = (
+            np.linalg.norm(
+                new_position
+                - self.previous_position
+            )
+        )
+
+        # Mesa manages the position internally
+        self.position = (
+            new_position
         )
 
         self.distance_travelled += (
@@ -228,7 +229,10 @@ class ObservationROVAgent(Agent):
             movement_time
         )
 
-        if self.path_index >= len(self.path) - 1:
+        if (
+            self.path_index
+            >= len(self.path) - 1
+        ):
 
             self.mission_complete = True
 
@@ -242,20 +246,15 @@ class ObservationROVAgent(Agent):
         distance,
     ):
         """
-        Calculate probability of detecting litter.
+        Calculate distance-dependent detection probability.
 
-        Formula:
-
-            P(d) = P_max * exp(-k * d)
-
-        where:
-
-            d     = distance to litter
-            P_max = maximum detection probability
-            k     = detection decay coefficient
+        P(d) = P_max * exp(-k * d)
         """
 
-        if distance > self.detection_radius:
+        if (
+            distance
+            > self.detection_radius
+        ):
 
             return 0.0
 
@@ -277,48 +276,61 @@ class ObservationROVAgent(Agent):
 
 
     # ========================================================
-    # DETECTION BEHAVIOUR
+    # DETECTION
     # ========================================================
 
     def detect_litter(self):
         """
-        Inspect all litter agents.
+        Use Mesa ContinuousSpace to find nearby agents.
 
-        If a litter agent is within the sensor radius,
-        attempt detection using the probabilistic
-        sensor model.
+        Only LitterAgent instances are considered.
         """
 
-        for litter in self.model.litter_agents:
+        nearby_agents, distances = (
+            self.get_neighbors_in_radius(
+                radius=(
+                    self.detection_radius
+                )
+            )
+        )
 
-            if litter.detected:
+        for agent, distance in zip(
+            nearby_agents,
+            distances,
+        ):
+
+            if not isinstance(
+                agent,
+                LitterAgent,
+            ):
                 continue
 
-            distance = np.linalg.norm(
-                litter.position
-                - self.position
+            if agent.detected:
+                continue
+
+            probability = (
+                self.calculate_detection_probability(
+                    distance
+                )
             )
 
-            if distance <= self.detection_radius:
+            random_value = (
+                self.model.random.random()
+            )
 
-                probability = (
-                    self.calculate_detection_probability(
-                        distance
-                    )
+            if (
+                random_value
+                <= probability
+            ):
+
+                agent.mark_detected(
+                    detection_time=(
+                        self.model.simulation_time
+                    ),
+                    rov_id=(
+                        self.unique_id
+                    ),
                 )
-
-                random_value = (
-                    self.model.random.random()
-                )
-
-                if random_value <= probability:
-
-                    litter.mark_detected(
-                        detection_time=(
-                            self.model.simulation_time
-                        ),
-                        rov_id=self.unique_id,
-                    )
 
 
     # ========================================================
@@ -327,11 +339,7 @@ class ObservationROVAgent(Agent):
 
     def step(self):
         """
-        Execute one complete ROV agent step.
-
-        Order:
-            1. Move
-            2. Sense/detect litter
+        Execute one complete Observation ROV step.
         """
 
         if self.mission_complete:

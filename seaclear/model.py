@@ -1,23 +1,25 @@
 """
-SeaClear Mesa Model
--------------------
+SeaClear Mesa Continuous-Space Model
+------------------------------------
 
-This file defines the Mesa model that coordinates
-the simplified SeaClear Observation ROV simulation.
+This model uses Mesa's ContinuousSpace to represent
+a 2D underwater search environment.
 
-The model:
-    - Creates the 2D seabed environment
-    - Generates random litter agents
-    - Generates the lawnmower search path
-    - Creates the Observation ROV agent
-    - Advances the simulation one step at a time
-    - Tracks mission statistics
+Agents:
+    - ObservationROVAgent
+    - LitterAgent
 """
 
 import math
+
 import numpy as np
 
 from mesa import Model
+from mesa.datacollection import DataCollector
+
+from mesa.experimental.continuous_space import (
+    ContinuousSpace,
+)
 
 from seaclear.agents import (
     LitterAgent,
@@ -36,24 +38,7 @@ def interpolate_line(
     step_size,
 ):
     """
-    Generate points along a straight line between two
-    coordinates.
-
-    Parameters
-    ----------
-    start:
-        Starting coordinate.
-
-    end:
-        Ending coordinate.
-
-    step_size:
-        Approximate distance between points.
-
-    Returns
-    -------
-    numpy.ndarray
-        Array of XY coordinates.
+    Generate evenly spaced points between two coordinates.
     """
 
     start = np.array(
@@ -71,6 +56,7 @@ def interpolate_line(
     )
 
     if distance == 0:
+
         return np.array(
             [start]
         )
@@ -79,7 +65,8 @@ def interpolate_line(
         1,
         int(
             math.ceil(
-                distance / step_size
+                distance
+                / step_size
             )
         ),
     )
@@ -99,12 +86,6 @@ def generate_lawnmower_path(
 ):
     """
     Generate a continuous lawnmower search trajectory.
-
-    The ROV:
-        1. Travels horizontally across the seabed
-        2. Moves upward
-        3. Travels horizontally in the opposite direction
-        4. Repeats until the search area is covered
     """
 
     path_segments = []
@@ -116,8 +97,9 @@ def generate_lawnmower_path(
     )
 
     if len(y_positions) == 0:
+
         raise ValueError(
-            "TRACK_SPACING is too large "
+            "Track spacing is too large "
             "for the selected environment."
         )
 
@@ -141,10 +123,6 @@ def generate_lawnmower_path(
         y_positions
     ):
 
-        # ----------------------------------------------------
-        # Determine horizontal direction
-        # ----------------------------------------------------
-
         if moving_right:
 
             row_end = np.array(
@@ -165,10 +143,6 @@ def generate_lawnmower_path(
                 dtype=float,
             )
 
-        # ----------------------------------------------------
-        # Generate horizontal section
-        # ----------------------------------------------------
-
         horizontal_segment = (
             interpolate_line(
                 current_position,
@@ -185,11 +159,10 @@ def generate_lawnmower_path(
             row_end.copy()
         )
 
-        # ----------------------------------------------------
-        # Move vertically to next row
-        # ----------------------------------------------------
-
-        if row_index < len(y_positions) - 1:
+        if (
+            row_index
+            < len(y_positions) - 1
+        ):
 
             next_y = (
                 y_positions[
@@ -237,41 +210,8 @@ def generate_lawnmower_path(
 
 class SeaClearModel(Model):
     """
-    Mesa model for the simplified SeaClear Observation
-    ROV litter-mapping simulation.
-
-    Parameters
-    ----------
-    width : float
-        Width of simulated seabed in metres.
-
-    height : float
-        Height of simulated seabed in metres.
-
-    num_litter : int
-        Number of litter agents.
-
-    rov_speed : float
-        ROV speed in metres per second.
-
-    track_spacing : float
-        Distance between lawnmower search tracks.
-
-    step_size : float
-        Distance between path coordinates.
-
-    detection_radius : float
-        Maximum litter sensing distance.
-
-    max_detection_probability : float
-        Maximum probability of detecting litter.
-
-    detection_decay : float
-        Controls how detection probability decreases
-        with distance.
-
-    seed : int
-        Random seed.
+    Mesa ContinuousSpace model for the simplified
+    SeaClear Observation ROV simulation.
     """
 
     def __init__(
@@ -289,7 +229,7 @@ class SeaClearModel(Model):
     ):
 
         # ====================================================
-        # Initialise Mesa Model
+        # Mesa model
         # ====================================================
 
         super().__init__(
@@ -297,32 +237,42 @@ class SeaClearModel(Model):
         )
 
         # ====================================================
-        # Store model parameters
+        # Parameters
         # ====================================================
 
-        self.width = width
+        self.width = float(
+            width
+        )
 
-        self.height = height
+        self.height = float(
+            height
+        )
 
-        self.num_litter = num_litter
+        self.num_litter = int(
+            num_litter
+        )
 
-        self.rov_speed = rov_speed
+        self.rov_speed = float(
+            rov_speed
+        )
 
-        self.track_spacing = (
+        self.track_spacing = float(
             track_spacing
         )
 
-        self.step_size = step_size
+        self.step_size = float(
+            step_size
+        )
 
-        self.detection_radius = (
+        self.detection_radius = float(
             detection_radius
         )
 
-        self.max_detection_probability = (
+        self.max_detection_probability = float(
             max_detection_probability
         )
 
-        self.detection_decay = (
+        self.detection_decay = float(
             detection_decay
         )
 
@@ -337,13 +287,39 @@ class SeaClearModel(Model):
         self.running = True
 
         # ====================================================
-        # Generate lawnmower trajectory
+        # Mesa ContinuousSpace
+        # ====================================================
+
+        self.space = ContinuousSpace(
+            dimensions=[
+                [
+                    0.0,
+                    self.width,
+                ],
+                [
+                    0.0,
+                    self.height,
+                ],
+            ],
+            torus=False,
+            random=self.random,
+            n_agents=(
+                self.num_litter + 1
+            ),
+        )
+
+        # ====================================================
+        # Generate ROV search path
         # ====================================================
 
         self.rov_path = (
             generate_lawnmower_path(
-                width=self.width,
-                height=self.height,
+                width=(
+                    self.width
+                ),
+                height=(
+                    self.height
+                ),
                 track_spacing=(
                     self.track_spacing
                 ),
@@ -375,8 +351,11 @@ class SeaClearModel(Model):
 
             litter = LitterAgent(
                 model=self,
-                x=x,
-                y=y,
+                space=self.space,
+                position=[
+                    x,
+                    y,
+                ],
             )
 
             self.litter_agents.append(
@@ -384,13 +363,16 @@ class SeaClearModel(Model):
             )
 
         # ====================================================
-        # Create Observation ROV agent
+        # Create Observation ROV
         # ====================================================
 
         self.rov = ObservationROVAgent(
             model=self,
+            space=self.space,
             path=self.rov_path,
-            speed=self.rov_speed,
+            speed=(
+                self.rov_speed
+            ),
             detection_radius=(
                 self.detection_radius
             ),
@@ -403,19 +385,65 @@ class SeaClearModel(Model):
         )
 
 
+        # ====================================================
+        # Mesa DataCollector
+        # ====================================================
+
+        self.datacollector = DataCollector(
+
+            model_reporters={
+
+                "Detected Litter": (
+                    lambda model:
+                    model.get_detected_count()
+                ),
+
+                "Undetected Litter": (
+                    lambda model:
+                    model.get_undetected_count()
+                ),
+
+                "Detection Rate": (
+                    lambda model:
+                    model.get_detection_rate()
+                ),
+
+                "Distance Travelled": (
+                    lambda model:
+                    model.rov.distance_travelled
+                ),
+
+                "Simulation Time": (
+                    lambda model:
+                    model.simulation_time
+                ),
+
+                "Mission Progress": (
+                    lambda model:
+                    model.get_progress()
+                ),
+            }
+        )
+
+        # Record initial state at Step 0
+        self.datacollector.collect(
+            self
+        )
+
+
     # ========================================================
     # MODEL STEP
     # ========================================================
 
     def step(self):
         """
-        Advance the model by one ABM timestep.
+        Advance simulation by one ABM timestep.
 
-        In each model step:
-
-            1. Increment the model step counter.
-            2. Execute the ROV behaviour.
-            3. Check whether the mission has finished.
+        During every step:
+            1. Advance the ROV.
+            2. Update the simulation state.
+            3. Record statistics with Mesa DataCollector.
+            4. Stop when the ROV completes its path.
         """
 
         if not self.running:
@@ -423,31 +451,24 @@ class SeaClearModel(Model):
 
         self.step_count += 1
 
-        # ----------------------------------------------------
-        # Activate Observation ROV
-        # ----------------------------------------------------
-
         self.rov.step()
 
-        # ----------------------------------------------------
-        # Check termination condition
-        # ----------------------------------------------------
+        # Record model state after this step
+        self.datacollector.collect(
+            self
+        )
 
         if self.rov.mission_complete:
-
             self.running = False
 
 
     # ========================================================
-    # MODEL STATISTICS
+    # STATISTICS
     # ========================================================
 
     def get_detected_litter(
         self
     ):
-        """
-        Return all detected litter agents.
-        """
 
         return [
             litter
@@ -460,9 +481,6 @@ class SeaClearModel(Model):
     def get_undetected_litter(
         self
     ):
-        """
-        Return all undetected litter agents.
-        """
 
         return [
             litter
@@ -475,9 +493,6 @@ class SeaClearModel(Model):
     def get_detected_count(
         self
     ):
-        """
-        Return number of detected litter agents.
-        """
 
         return len(
             self.get_detected_litter()
@@ -487,9 +502,6 @@ class SeaClearModel(Model):
     def get_undetected_count(
         self
     ):
-        """
-        Return number of undetected litter agents.
-        """
 
         return len(
             self.get_undetected_litter()
@@ -499,11 +511,9 @@ class SeaClearModel(Model):
     def get_detection_rate(
         self
     ):
-        """
-        Return litter detection percentage.
-        """
 
         if self.num_litter == 0:
+
             return 0.0
 
         return (
@@ -516,15 +526,13 @@ class SeaClearModel(Model):
     def get_progress(
         self
     ):
-        """
-        Return mission completion percentage.
-        """
 
         total_path_steps = (
             len(self.rov.path) - 1
         )
 
         if total_path_steps <= 0:
+
             return 100.0
 
         return (

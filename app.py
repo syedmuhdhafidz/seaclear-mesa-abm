@@ -19,6 +19,7 @@ from matplotlib.patches import Circle
 from mesa.visualization import (
     Slider,
     SolaraViz,
+    make_plot_component,
 )
 
 from mesa.visualization.utils import (
@@ -418,7 +419,25 @@ def SeaClearPlot(model):
 
 
 # ============================================================
-# 4. MESA SOLARA PAGE
+# 4. DATA VISUALIZATION COMPONENTS
+# ============================================================
+
+DetectionPlot = make_plot_component(
+    {
+        "Detected Litter": "tab:green",
+        "Undetected Litter": "tab:red",
+    }
+)
+
+DetectionRatePlot = make_plot_component(
+    {
+        "Detection Rate": "tab:blue",
+    }
+)
+
+
+# ============================================================
+# 5. MESA SOLARA PAGE
 # ============================================================
 
 page = SolaraViz(
@@ -426,7 +445,9 @@ page = SolaraViz(
     model,
 
     components=[
-        SeaClearPlot
+        SeaClearPlot,
+        DetectionPlot,
+        DetectionRatePlot,
     ],
 
     model_params=model_params,
