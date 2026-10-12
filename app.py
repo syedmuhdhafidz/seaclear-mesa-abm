@@ -3,7 +3,7 @@ SeaClear Mesa Visualization
 ---------------------------
 
 Browser-based visualization for the simplified
-SeaClear Observation ROV Agent-Based Model.
+parallel mapping-and-collection SeaClear ABM.
 
 Run with:
 
@@ -14,7 +14,6 @@ import numpy as np
 import solara
 
 from matplotlib.figure import Figure
-from matplotlib.patches import Circle
 
 from mesa.visualization import (
     Slider,
@@ -24,6 +23,10 @@ from mesa.visualization import (
 
 from mesa.visualization.utils import (
     update_counter,
+)
+
+from seaclear.agents import (
+    LitterState,
 )
 
 from seaclear.model import (
@@ -61,18 +64,34 @@ model_params = {
 
     "num_litter": Slider(
         label="Number of Litter Agents",
-        value=20,
+        value=30,
         min=5,
         max=100,
         step=5,
     ),
 
+    "num_marine_life": Slider(
+        label="Marine Life Agents",
+        value=10,
+        min=0,
+        max=30,
+        step=1,
+    ),
+
     "rov_speed": Slider(
-        label="ROV Speed (m/s)",
+        label="ObsROV Speed (m/s)",
         value=1.0,
         min=0.5,
-        max=5.0,
-        step=0.5,
+        max=3.0,
+        step=0.1,
+    ),
+
+    "collection_rov_speed": Slider(
+        label="Collection ROV Speed (m/s)",
+        value=1.2,
+        min=0.5,
+        max=3.0,
+        step=0.1,
     ),
 
     "track_spacing": Slider(
@@ -107,8 +126,25 @@ model_params = {
         step=0.01,
     ),
 
-    # Fixed for now
+    "large_litter_probability": Slider(
+        label="Large Litter Probability",
+        value=0.10,
+        min=0.00,
+        max=0.50,
+        step=0.05,
+    ),
+
+    "collection_success_probability": Slider(
+        label="Collection Success Probability",
+        value=0.90,
+        min=0.10,
+        max=1.00,
+        step=0.05,
+    ),
+
     "step_size": 0.5,
+    "pickup_radius": 0.75,
+    "basket_docking_radius": 1.0,
 }
 
 
@@ -120,55 +156,24 @@ model = SeaClearModel()
 
 
 # ============================================================
-# 3. CUSTOM SEACLEAR VISUALIZATION
+# 3. CUSTOM VISUALIZATION
 # ============================================================
 
 @solara.component
 def SeaClearPlot(model):
-    """
-    Display the current state of the SeaClear simulation.
-
-    Shows:
-        - Search area
-        - Planned lawnmower path
-        - Travelled ROV trajectory
-        - Observation ROV
-        - Detection radius
-        - Detected litter
-        - Undetected litter
-        - Mission statistics
-    """
-
-    # --------------------------------------------------------
-    # IMPORTANT:
-    # This tells Solara/Mesa that this component depends on
-    # the simulation update counter.
-    #
-    # Every model step changes the counter and therefore
-    # triggers this component to redraw.
-    # --------------------------------------------------------
 
     update_counter.get()
 
-    # --------------------------------------------------------
-    # Create Matplotlib figure
-    # --------------------------------------------------------
-
     fig = Figure(
-        figsize=(10, 7)
+        figsize=(11, 8)
     )
 
     ax = fig.subplots()
 
-    # Leave space on right side for statistics
     fig.subplots_adjust(
-        right=0.75,
+        right=0.76,
         bottom=0.18,
     )
-
-    # --------------------------------------------------------
-    # Environment
-    # --------------------------------------------------------
 
     ax.set_xlim(
         0,
@@ -194,18 +199,24 @@ def SeaClearPlot(model):
     )
 
     ax.set_title(
-        "SeaClear Observation ROV Search",
+        (
+            "Parallel SeaClear ABM"
+            f"  |  t = "
+            f"{model.simulation_time / 60.0:.1f} min"
+            f"  |  in basket: "
+            f"{model.basket.collected_count}"
+        ),
         fontsize=14,
         fontweight="bold",
     )
 
     ax.grid(
         True,
-        alpha=0.25,
+        alpha=0.20,
     )
 
     # --------------------------------------------------------
-    # Planned lawnmower path
+    # Planned ObsROV path
     # --------------------------------------------------------
 
     ax.plot(
@@ -213,173 +224,253 @@ def SeaClearPlot(model):
         model.rov_path[:, 1],
         linestyle="--",
         linewidth=1.0,
-        alpha=0.4,
-        label="Planned Search Path",
+        alpha=0.25,
+        label="ObsROV Planned Path",
     )
 
     # --------------------------------------------------------
-    # ROV travelled path
+    # ObsROV travelled path
     # --------------------------------------------------------
 
-    history = np.array(
+    observation_history = np.array(
         model.rov.history
     )
 
-    if len(history) > 1:
+    if len(observation_history) > 1:
 
         ax.plot(
-            history[:, 0],
-            history[:, 1],
-            linewidth=2.0,
-            alpha=0.8,
-            label="ROV Travelled Path",
+            observation_history[:, 0],
+            observation_history[:, 1],
+            linewidth=1.5,
+            alpha=0.65,
+            label="ObsROV Travelled",
         )
 
     # --------------------------------------------------------
-    # Litter agents
+    # Collection ROV travelled path
     # --------------------------------------------------------
 
-    detected_litter = (
-        model.get_detected_litter()
+    collection_history = np.array(
+        model.collection_rov.history
     )
 
-    undetected_litter = (
-        model.get_undetected_litter()
+    if len(collection_history) > 1:
+
+        ax.plot(
+            collection_history[:, 0],
+            collection_history[:, 1],
+            linewidth=1.5,
+            alpha=0.55,
+            linestyle=":",
+            label="ColROV Travelled",
+        )
+
+    # --------------------------------------------------------
+    # Litter states
+    # --------------------------------------------------------
+
+    pending = (
+        model.get_pending_litter()
     )
 
-    # --------------------------------------------------------
-    # Undetected litter
-    # --------------------------------------------------------
+    collected = (
+        model.get_collected_litter()
+    )
 
-    if len(undetected_litter) > 0:
+    failed = (
+        model.get_failed_litter()
+    )
 
-        undetected_positions = np.array(
+    large = (
+        model.get_large_flagged_litter()
+    )
+
+    # Undiscovered litter is intentionally hidden.
+
+    if pending:
+
+        positions = np.array(
             [
                 litter.position
                 for litter
-                in undetected_litter
+                in pending
             ]
         )
 
         ax.scatter(
-            undetected_positions[:, 0],
-            undetected_positions[:, 1],
-            marker="x",
-            s=70,
-            linewidths=2,
-            label="Undetected Litter",
-        )
-
-    # --------------------------------------------------------
-    # Detected litter
-    # --------------------------------------------------------
-
-    if len(detected_litter) > 0:
-
-        detected_positions = np.array(
-            [
-                litter.position
-                for litter
-                in detected_litter
-            ]
-        )
-
-        ax.scatter(
-            detected_positions[:, 0],
-            detected_positions[:, 1],
+            positions[:, 0],
+            positions[:, 1],
             marker="o",
-            s=70,
-            label="Detected Litter",
+            s=55,
+            color="0.30",
+            label="Litter: on map / pending",
         )
+
+    if collected:
+
+        positions = np.array(
+            [
+                litter.position
+                for litter
+                in collected
+            ]
+        )
+
+        ax.scatter(
+            positions[:, 0],
+            positions[:, 1],
+            marker="o",
+            s=55,
+            color="tab:blue",
+            label="Litter: collected",
+        )
+
+    if failed:
+
+        positions = np.array(
+            [
+                litter.position
+                for litter
+                in failed
+            ]
+        )
+
+        ax.scatter(
+            positions[:, 0],
+            positions[:, 1],
+            marker="x",
+            s=65,
+            linewidths=2,
+            color="tab:orange",
+            label="Litter: failed",
+        )
+
+    if large:
+
+        positions = np.array(
+            [
+                litter.position
+                for litter
+                in large
+            ]
+        )
+
+        ax.scatter(
+            positions[:, 0],
+            positions[:, 1],
+            marker="s",
+            s=65,
+            color="#E69F00",
+            label="Large litter: flagged",
+        )
+
+    # --------------------------------------------------------
+    # Marine life
+    # --------------------------------------------------------
+
+    if model.marine_life_agents:
+
+        marine_positions = np.array(
+            [
+                agent.position
+                for agent
+                in model.marine_life_agents
+            ]
+        )
+
+        ax.scatter(
+            marine_positions[:, 0],
+            marine_positions[:, 1],
+            marker="^",
+            s=50,
+            color="#1B9E77",
+            label="Marine life",
+        )
+
+    # --------------------------------------------------------
+    # Basket
+    # --------------------------------------------------------
+
+    ax.scatter(
+        [model.basket.position[0]],
+        [model.basket.position[1]],
+        marker="*",
+        s=280,
+        color="black",
+        label="Collection Basket",
+        zorder=7,
+    )
 
     # --------------------------------------------------------
     # Observation ROV
     # --------------------------------------------------------
 
-    rov_x = model.rov.position[0]
-    rov_y = model.rov.position[1]
+    ax.scatter(
+        [model.rov.position[0]],
+        [model.rov.position[1]],
+        marker="D",
+        s=120,
+        color="black",
+        label="miniTortuga / ObsROV",
+        zorder=8,
+    )
+
+    # --------------------------------------------------------
+    # Collection ROV
+    # --------------------------------------------------------
 
     ax.scatter(
-        [rov_x],
-        [rov_y],
-        marker="o",
-        s=130,
-        label="Observation ROV",
-        zorder=5,
+        [model.collection_rov.position[0]],
+        [model.collection_rov.position[1]],
+        marker="P",
+        s=150,
+        color="tab:blue",
+        edgecolors="black",
+        linewidths=1.2,
+        label="Tortuga / ColROV",
+        zorder=9,
     )
 
     # --------------------------------------------------------
-    # Sensor detection radius
+    # Statistics
     # --------------------------------------------------------
-
-    sensor_circle = Circle(
-        (
-            rov_x,
-            rov_y,
-        ),
-        radius=model.detection_radius,
-        fill=False,
-        linestyle=":",
-        linewidth=1.5,
-        alpha=0.9,
-        label="Detection Radius",
-    )
-
-    ax.add_patch(
-        sensor_circle
-    )
-
-    # --------------------------------------------------------
-    # Mission statistics
-    # --------------------------------------------------------
-
-    detected_count = (
-        model.get_detected_count()
-    )
-
-    undetected_count = (
-        model.get_undetected_count()
-    )
-
-    detection_rate = (
-        model.get_detection_rate()
-    )
-
-    progress = (
-        model.get_progress()
-    )
 
     status_text = (
 
         "MISSION STATUS\n"
         "--------------------\n"
-
-        f"ABM Step:     "
+        f"ABM step:      "
         f"{model.step_count}\n"
-
-        f"Progress:     "
-        f"{progress:.1f}%\n"
-
-        f"Time:         "
+        f"Time:          "
         f"{model.simulation_time:.1f} s\n"
+        f"Map progress:  "
+        f"{model.get_progress():.1f}%\n\n"
 
-        f"Distance:     "
-        f"{model.rov.distance_travelled:.1f} m\n\n"
-
-        "LITTER MAPPING\n"
+        "LITTER STATUS\n"
         "--------------------\n"
-
-        f"Total:        "
+        f"Total:         "
         f"{model.num_litter}\n"
+        f"Undiscovered:  "
+        f"{model.get_undiscovered_count()}\n"
+        f"Pending:       "
+        f"{model.get_pending_count()}\n"
+        f"Large flagged: "
+        f"{model.get_large_flagged_count()}\n"
+        f"Failed:        "
+        f"{model.get_failed_count()}\n"
+        f"Collected:     "
+        f"{model.get_collected_count()}\n"
+        f"In basket:     "
+        f"{model.basket.collected_count}\n\n"
 
-        f"Detected:     "
-        f"{detected_count}\n"
-
-        f"Undetected:   "
-        f"{undetected_count}\n"
-
-        f"Detection:    "
-        f"{detection_rate:.1f}%"
+        "ROV DISTANCE\n"
+        "--------------------\n"
+        f"ObsROV:        "
+        f"{model.rov.distance_travelled:.1f} m\n"
+        f"Collection:    "
+        f"{model.collection_rov.distance_travelled:.1f} m\n"
+        f"Collector mode:"
+        f" {model.collection_rov.mode}"
     )
 
     ax.text(
@@ -388,14 +479,9 @@ def SeaClearPlot(model):
         status_text,
         transform=ax.transAxes,
         verticalalignment="top",
-        horizontalalignment="left",
-        fontsize=9,
+        fontsize=8.5,
         family="monospace",
     )
-
-    # --------------------------------------------------------
-    # Legend
-    # --------------------------------------------------------
 
     ax.legend(
         loc="upper center",
@@ -404,12 +490,8 @@ def SeaClearPlot(model):
             -0.10,
         ),
         ncol=2,
-        fontsize=8,
+        fontsize=7.5,
     )
-
-    # --------------------------------------------------------
-    # Render in Solara
-    # --------------------------------------------------------
 
     solara.FigureMatplotlib(
         fig,
@@ -419,25 +501,27 @@ def SeaClearPlot(model):
 
 
 # ============================================================
-# 4. DATA VISUALIZATION COMPONENTS
+# 4. DATA PLOTS
 # ============================================================
 
-DetectionPlot = make_plot_component(
+LitterStatusPlot = make_plot_component(
     {
-        "Detected Litter": "tab:green",
-        "Undetected Litter": "tab:red",
+        "Mapped Litter": "tab:blue",
+        "Collected Litter": "tab:green",
+        "Failed Litter": "tab:red",
+        "Large Litter": "tab:orange",
     }
 )
 
-DetectionRatePlot = make_plot_component(
+BasketPlot = make_plot_component(
     {
-        "Detection Rate": "tab:blue",
+        "Basket Count": "tab:green",
     }
 )
 
 
 # ============================================================
-# 5. MESA SOLARA PAGE
+# 5. SOLARA PAGE
 # ============================================================
 
 page = SolaraViz(
@@ -446,14 +530,14 @@ page = SolaraViz(
 
     components=[
         SeaClearPlot,
-        DetectionPlot,
-        DetectionRatePlot,
+        LitterStatusPlot,
+        BasketPlot,
     ],
 
     model_params=model_params,
 
     name=(
-        "SeaClear Agent-Based Model"
+        "SeaClear Multi-Agent Model"
     ),
 )
 
