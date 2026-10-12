@@ -1,8 +1,8 @@
 # SeaClear Mesa ABM
 
-A simplified 2D Agent-Based Model (ABM) of underwater litter mapping inspired by the **SeaClear** multi-robot marine litter cleanup system.
+A simplified 2D Agent-Based Model (ABM) of underwater litter mapping and collection inspired by the **SeaClear** multi-robot marine litter cleanup system.
 
-The simulation focuses on the search and mapping phase performed by an Observation ROV (ObsROV). It is implemented using the [Mesa](https://mesa.readthedocs.io/) agent-based modelling framework and visualised using Solara browser interface.
+The current simulation models parallel operation between an Observation ROV (ObsROV) and a Collection ROV (ColROV), together with litter agents, marine-life agents, and a collection basket. It is implemented using the [Mesa](https://mesa.readthedocs.io/) agent-based modelling framework and visualised through a Solara browser interface.
 
 ## Simulation Preview
 
@@ -22,17 +22,22 @@ This implementation intentionally models only a simplified part of the complete 
 The current model represents:
 
 - a two-dimensional underwater search area;
-- one ObsROV agent;
-- multiple stationary litter agents;
-- a predefined lawnmower search trajectory;
-- continuous spatial positioning;
-- distance-based litter sensing;
-- probabilistic litter detection;
-- live browser-based visualisation;
+- one ObsROV (miniTortuga);
+- one ColROV (Tortuga);
+- multiple litter agents with lifecycle states;
+- large litter that is detected and flagged but not collected;
+- a stationary collection basket;
+- marine-life agents with simple random movement;
+- a predefined lawnmower mapping trajectory;
+- parallel litter mapping and collection;
+- continuous spatial positioning using Mesa `ContinuousSpace`;
+- distance-based probabilistic litter sensing;
+- probabilistic litter collection;
+- browser-based live visualisation;
 - configurable simulation parameters; and
-- model-level data collection.
+- model-level time-series data collection.
 
-The following are intentionally outside the current scope:
+The following remain outside the current scope:
 
 - 3D underwater physics;
 - hydrodynamic modelling;
@@ -47,28 +52,76 @@ The following are intentionally outside the current scope:
 
 ## Model Architecture
 
-The model contains two primary agent types.
+The model currently contains five agent types.
 
-### ObsROV Agent
+### Observation ROV Agent
 
-The ObsROV is an active mobile agent that:
+The ObsROV:
 
 1. follows a lawnmower search trajectory;
-2. moves through the underwater search area;
-3. searches for nearby litter agents;
-4. calculates distance-dependent detection probability; and
-5. updates litter agents when a detection succeeds.
+2. senses nearby litter agents;
+3. performs probabilistic detection; and
+4. changes successfully detected litter from `UNDISCOVERED` to `ON_MAP`.
+
+### Collection ROV Agent
+
+The ColROV:
+
+1. searches for mapped normal-sized litter;
+2. selects the nearest eligible target;
+3. travels toward the target;
+4. performs a probabilistic collection attempt;
+5. returns successfully collected litter to the basket; and
+6. repeats until no eligible mapped litter remains.
 
 ### Litter Agent
 
-Each litter object is represented as an individual passive agent.
+Each litter agent contains:
 
-A litter agent maintains:
+- a spatial position;
+- a lifecycle state;
+- detection information;
+- collection information;
+- number of collection attempts; and
+- an `is_large` property.
 
-- its spatial position;
-- detection status;
-- detection time; and
-- the ID of the ROV that detected it.
+Litter lifecycle:
+
+```text
+    UNDISCOVERED
+          ↓
+  ObsROV detects litter
+          ↓
+        ON_MAP
+          ↓
+    ┌─────┴─────┐
+    │           │
+ large        normal
+    │           │
+ FLAGGED  ColROV selects
+                ↓
+           travel to item
+                ↓
+        collection attempt
+            /        \
+         success    failure
+            │          │
+        PICKED_UP    FAILED
+            │
+       return basket
+            │
+         deposit
+            │
+        COLLECTED
+```
+
+### Basket Agent
+
+The stationary basket records the number of litter objects successfully deposited by the ColROV.
+
+### Marine-Life Agent
+
+Marine-life agents perform simple bounded random movement within the underwater environment. They currently provide environmental activity but do not yet affect ROV navigation.
 
 ## Environment
 
@@ -257,14 +310,19 @@ The model parameters can also be changed from the sidebar before resetting the m
 
 The model tracks:
 
-- detected litter count;
-- undetected litter count;
-- detection rate;
-- ROV distance travelled;
+- mapped litter;
+- undiscovered litter;
+- pending litter;
+- collected litter;
+- failed collection attempts;
+- large flagged litter;
+- litter deposited in the basket;
+- Observation ROV distance travelled;
+- Collection ROV distance travelled;
 - simulated mission time; and
-- mission progress.
+- mapping progress.
 
-Mesa's `DataCollector` can also retain simulation results across model steps for later analysis.
+Mesa's `DataCollector` stores these values across simulation steps for later analysis.
 
 ## Example Baseline Run
 
@@ -309,10 +367,7 @@ Possible extensions include:
 - track-spacing optimisation;
 - water-turbidity modelling;
 - energy-consumption modelling;
-- heterogeneous litter properties;
 - Observation ROV localization uncertainty;
-- Collection ROV agents;
-- collection basket agent;
 - USV and UAV agents;
 - multi-agent task allocation;
 - sensor fusion; and

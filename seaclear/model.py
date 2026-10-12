@@ -1,13 +1,13 @@
 """
-SeaClear Mesa Continuous-Space Model
-------------------------------------
+SeaClear Mesa Multi-Agent Continuous-Space Model
+------------------------------------------------
 
-This model uses Mesa's ContinuousSpace to represent
-a 2D underwater search environment.
-
-Agents:
-    - ObservationROVAgent
+Current agents:
+    - ObservationROVAgent (miniTortuga)
+    - CollectionROVAgent (Tortuga)
     - LitterAgent
+    - BasketAgent
+    - MarineLifeAgent
 """
 
 import math
@@ -22,13 +22,17 @@ from mesa.experimental.continuous_space import (
 )
 
 from seaclear.agents import (
+    BasketAgent,
+    CollectionROVAgent,
     LitterAgent,
+    LitterState,
+    MarineLifeAgent,
     ObservationROVAgent,
 )
 
 
 # ============================================================
-# 1. PATH HELPER FUNCTIONS
+# 1. PATH HELPERS
 # ============================================================
 
 
@@ -37,10 +41,6 @@ def interpolate_line(
     end,
     step_size,
 ):
-    """
-    Generate evenly spaced points between two coordinates.
-    """
-
     start = np.array(
         start,
         dtype=float,
@@ -56,7 +56,6 @@ def interpolate_line(
     )
 
     if distance == 0:
-
         return np.array(
             [start]
         )
@@ -84,10 +83,6 @@ def generate_lawnmower_path(
     track_spacing,
     step_size,
 ):
-    """
-    Generate a continuous lawnmower search trajectory.
-    """
-
     path_segments = []
 
     y_positions = np.arange(
@@ -97,7 +92,6 @@ def generate_lawnmower_path(
     )
 
     if len(y_positions) == 0:
-
         raise ValueError(
             "Track spacing is too large "
             "for the selected environment."
@@ -209,28 +203,26 @@ def generate_lawnmower_path(
 
 
 class SeaClearModel(Model):
-    """
-    Mesa ContinuousSpace model for the simplified
-    SeaClear Observation ROV simulation.
-    """
 
     def __init__(
         self,
         width=50.0,
         height=50.0,
-        num_litter=20,
+        num_litter=30,
+        num_marine_life=10,
         rov_speed=1.0,
+        collection_rov_speed=1.2,
         track_spacing=5.0,
         step_size=0.5,
         detection_radius=3.0,
         max_detection_probability=0.95,
         detection_decay=0.18,
+        large_litter_probability=0.10,
+        pickup_radius=0.75,
+        collection_success_probability=0.90,
+        basket_docking_radius=1.0,
         rng=42,
     ):
-
-        # ====================================================
-        # Mesa model
-        # ====================================================
 
         super().__init__(
             rng=rng
@@ -240,20 +232,23 @@ class SeaClearModel(Model):
         # Parameters
         # ====================================================
 
-        self.width = float(
-            width
-        )
-
-        self.height = float(
-            height
-        )
+        self.width = float(width)
+        self.height = float(height)
 
         self.num_litter = int(
             num_litter
         )
 
+        self.num_marine_life = int(
+            num_marine_life
+        )
+
         self.rov_speed = float(
             rov_speed
+        )
+
+        self.collection_rov_speed = float(
+            collection_rov_speed
         )
 
         self.track_spacing = float(
@@ -276,6 +271,29 @@ class SeaClearModel(Model):
             detection_decay
         )
 
+        self.large_litter_probability = float(
+            large_litter_probability
+        )
+
+        self.pickup_radius = float(
+            pickup_radius
+        )
+
+        self.collection_success_probability = float(
+            collection_success_probability
+        )
+
+        self.basket_docking_radius = float(
+            basket_docking_radius
+        )
+
+        # One model step corresponds to the time required
+        # for the Observation ROV to travel STEP_SIZE.
+        self.time_step = (
+            self.step_size
+            / self.rov_speed
+        )
+
         # ====================================================
         # Simulation state
         # ====================================================
@@ -287,8 +305,14 @@ class SeaClearModel(Model):
         self.running = True
 
         # ====================================================
-        # Mesa ContinuousSpace
+        # Continuous space
         # ====================================================
+
+        expected_agents = (
+            self.num_litter
+            + self.num_marine_life
+            + 3
+        )
 
         self.space = ContinuousSpace(
             dimensions=[
@@ -303,23 +327,17 @@ class SeaClearModel(Model):
             ],
             torus=False,
             random=self.random,
-            n_agents=(
-                self.num_litter + 1
-            ),
+            n_agents=expected_agents,
         )
 
         # ====================================================
-        # Generate ROV search path
+        # Search path
         # ====================================================
 
         self.rov_path = (
             generate_lawnmower_path(
-                width=(
-                    self.width
-                ),
-                height=(
-                    self.height
-                ),
+                width=self.width,
+                height=self.height,
                 track_spacing=(
                     self.track_spacing
                 ),
@@ -330,7 +348,25 @@ class SeaClearModel(Model):
         )
 
         # ====================================================
-        # Create litter agents
+        # Basket
+        # ====================================================
+
+        basket_position = np.array(
+            [
+                self.width / 2.0,
+                self.height / 2.0,
+            ],
+            dtype=float,
+        )
+
+        self.basket = BasketAgent(
+            model=self,
+            space=self.space,
+            position=basket_position,
+        )
+
+        # ====================================================
+        # Litter agents
         # ====================================================
 
         self.litter_agents = []
@@ -349,6 +385,11 @@ class SeaClearModel(Model):
                 self.height,
             )
 
+            is_large = (
+                self.random.random()
+                < self.large_litter_probability
+            )
+
             litter = LitterAgent(
                 model=self,
                 space=self.space,
@@ -356,6 +397,7 @@ class SeaClearModel(Model):
                     x,
                     y,
                 ],
+                is_large=is_large,
             )
 
             self.litter_agents.append(
@@ -363,16 +405,50 @@ class SeaClearModel(Model):
             )
 
         # ====================================================
-        # Create Observation ROV
+        # Marine-life agents
+        # ====================================================
+
+        self.marine_life_agents = []
+
+        for _ in range(
+            self.num_marine_life
+        ):
+
+            x = self.random.uniform(
+                0.0,
+                self.width,
+            )
+
+            y = self.random.uniform(
+                0.0,
+                self.height,
+            )
+
+            marine_life = (
+                MarineLifeAgent(
+                    model=self,
+                    space=self.space,
+                    position=[
+                        x,
+                        y,
+                    ],
+                    speed=0.10,
+                )
+            )
+
+            self.marine_life_agents.append(
+                marine_life
+            )
+
+        # ====================================================
+        # Observation ROV
         # ====================================================
 
         self.rov = ObservationROVAgent(
             model=self,
             space=self.space,
             path=self.rov_path,
-            speed=(
-                self.rov_speed
-            ),
+            speed=self.rov_speed,
             detection_radius=(
                 self.detection_radius
             ),
@@ -384,48 +460,89 @@ class SeaClearModel(Model):
             ),
         )
 
+        # ====================================================
+        # Collection ROV
+        # ====================================================
+
+        self.collection_rov = (
+            CollectionROVAgent(
+                model=self,
+                space=self.space,
+                position=(
+                    basket_position.copy()
+                ),
+                speed=(
+                    self.collection_rov_speed
+                ),
+                pickup_radius=(
+                    self.pickup_radius
+                ),
+                collection_success_probability=(
+                    self.collection_success_probability
+                ),
+            )
+        )
 
         # ====================================================
-        # Mesa DataCollector
+        # DataCollector
         # ====================================================
 
         self.datacollector = DataCollector(
 
             model_reporters={
 
-                "Detected Litter": (
+                "Mapped Litter": (
                     lambda model:
-                    model.get_detected_count()
+                    model.get_mapped_count()
                 ),
 
-                "Undetected Litter": (
+                "Collected Litter": (
                     lambda model:
-                    model.get_undetected_count()
+                    model.get_collected_count()
                 ),
 
-                "Detection Rate": (
+                "Failed Litter": (
                     lambda model:
-                    model.get_detection_rate()
+                    model.get_failed_count()
                 ),
 
-                "Distance Travelled": (
+                "Large Litter": (
+                    lambda model:
+                    model.get_large_flagged_count()
+                ),
+
+                "Pending Litter": (
+                    lambda model:
+                    model.get_pending_count()
+                ),
+
+                "Undiscovered Litter": (
+                    lambda model:
+                    model.get_undiscovered_count()
+                ),
+
+                "Basket Count": (
+                    lambda model:
+                    model.basket.collected_count
+                ),
+
+                "Observation Distance": (
                     lambda model:
                     model.rov.distance_travelled
+                ),
+
+                "Collection Distance": (
+                    lambda model:
+                    model.collection_rov.distance_travelled
                 ),
 
                 "Simulation Time": (
                     lambda model:
                     model.simulation_time
                 ),
-
-                "Mission Progress": (
-                    lambda model:
-                    model.get_progress()
-                ),
             }
         )
 
-        # Record initial state at Step 0
         self.datacollector.collect(
             self
         )
@@ -436,103 +553,239 @@ class SeaClearModel(Model):
     # ========================================================
 
     def step(self):
-        """
-        Advance simulation by one ABM timestep.
-
-        During every step:
-            1. Advance the ROV.
-            2. Update the simulation state.
-            3. Record statistics with Mesa DataCollector.
-            4. Stop when the ROV completes its path.
-        """
 
         if not self.running:
             return
 
         self.step_count += 1
 
+        # Mapping
         self.rov.step()
 
-        # Record model state after this step
+        # Collection occurs in parallel.
+        self.collection_rov.step()
+
+        # Environmental agents
+        for marine_life in (
+            self.marine_life_agents
+        ):
+            marine_life.step()
+
+        # Advance global model time only once.
+        self.simulation_time += (
+            self.time_step
+        )
+
         self.datacollector.collect(
             self
         )
 
-        if self.rov.mission_complete:
+        if self.is_mission_complete():
             self.running = False
 
 
     # ========================================================
-    # STATISTICS
+    # MISSION TERMINATION
     # ========================================================
 
-    def get_detected_litter(
-        self
-    ):
+    def is_mission_complete(self):
+
+        if not self.rov.mission_complete:
+            return False
+
+        normal_pending = [
+            litter
+            for litter
+            in self.litter_agents
+            if (
+                litter.state
+                == LitterState.ON_MAP
+                and not litter.is_large
+            )
+        ]
+
+        collector_busy = (
+            self.collection_rov.mode
+            != CollectionROVAgent.IDLE
+            or
+            self.collection_rov.carrying_litter
+            is not None
+        )
+
+        return (
+            len(normal_pending) == 0
+            and not collector_busy
+        )
+
+
+    # ========================================================
+    # STATE QUERIES
+    # ========================================================
+
+    def get_undiscovered_litter(self):
 
         return [
             litter
             for litter
             in self.litter_agents
-            if litter.detected
+            if (
+                litter.state
+                == LitterState.UNDISCOVERED
+            )
         ]
 
 
-    def get_undetected_litter(
-        self
-    ):
+    def get_pending_litter(self):
 
         return [
             litter
             for litter
             in self.litter_agents
-            if not litter.detected
+            if (
+                litter.state
+                == LitterState.ON_MAP
+                and not litter.is_large
+            )
         ]
 
 
-    def get_detected_count(
-        self
-    ):
+    def get_large_flagged_litter(self):
+
+        return [
+            litter
+            for litter
+            in self.litter_agents
+            if (
+                litter.state
+                == LitterState.ON_MAP
+                and litter.is_large
+            )
+        ]
+
+
+    def get_collected_litter(self):
+
+        return [
+            litter
+            for litter
+            in self.litter_agents
+            if (
+                litter.state
+                == LitterState.COLLECTED
+            )
+        ]
+
+
+    def get_failed_litter(self):
+
+        return [
+            litter
+            for litter
+            in self.litter_agents
+            if (
+                litter.state
+                == LitterState.FAILED
+            )
+        ]
+
+
+    def get_picked_up_litter(self):
+
+        return [
+            litter
+            for litter
+            in self.litter_agents
+            if (
+                litter.state
+                == LitterState.PICKED_UP
+            )
+        ]
+
+
+    # ========================================================
+    # COUNTERS
+    # ========================================================
+
+    def get_undiscovered_count(self):
 
         return len(
-            self.get_detected_litter()
+            self.get_undiscovered_litter()
         )
 
 
-    def get_undetected_count(
-        self
-    ):
+    def get_pending_count(self):
 
         return len(
-            self.get_undetected_litter()
+            self.get_pending_litter()
         )
 
 
-    def get_detection_rate(
-        self
-    ):
+    def get_large_flagged_count(self):
+
+        return len(
+            self.get_large_flagged_litter()
+        )
+
+
+    def get_collected_count(self):
+
+        return len(
+            self.get_collected_litter()
+        )
+
+
+    def get_failed_count(self):
+
+        return len(
+            self.get_failed_litter()
+        )
+
+
+    def get_mapped_count(self):
+        """
+        Count every litter item that is no longer undiscovered.
+        """
+
+        return (
+            self.num_litter
+            - self.get_undiscovered_count()
+        )
+
+
+    def get_mapping_rate(self):
 
         if self.num_litter == 0:
-
             return 0.0
 
         return (
-            self.get_detected_count()
+            self.get_mapped_count()
             / self.num_litter
             * 100.0
         )
 
 
-    def get_progress(
-        self
-    ):
+    def get_collection_rate(self):
+        """
+        Percentage of all litter deposited in basket.
+        """
+
+        if self.num_litter == 0:
+            return 0.0
+
+        return (
+            self.get_collected_count()
+            / self.num_litter
+            * 100.0
+        )
+
+
+    def get_progress(self):
 
         total_path_steps = (
             len(self.rov.path) - 1
         )
 
         if total_path_steps <= 0:
-
             return 100.0
 
         return (
